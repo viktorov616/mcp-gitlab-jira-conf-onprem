@@ -10,6 +10,7 @@ import {
   JiraCustomFieldUpdatePayload,
   JiraSprint,
   JiraBoard,
+  JiraRemoteLink,
 } from './jira';
 
 // Types for Atlassian Document Format (ADF)
@@ -547,17 +548,8 @@ export class JiraService {
 
   async getTicketDetails(ticketId: string): Promise<JiraTicket> {
     try {
-      // Fetch the issue with all fields
       const issue = await this.client.issues.getIssue({
         issueIdOrKey: ticketId,
-        expand: [
-          'names',
-          'schema',
-          'operations',
-          'editmeta',
-          'changelog',
-          'renderedFields',
-        ],
       });
 
       // Get field metadata for custom field name mapping
@@ -577,6 +569,20 @@ export class JiraService {
       );
       throw error;
     }
+  }
+
+  async getRemoteLinks(ticketId: string): Promise<JiraRemoteLink[]> {
+    const links = await this.client.issueRemoteLinks.getRemoteIssueLinks({
+      issueIdOrKey: ticketId,
+    });
+    return (Array.isArray(links) ? links : [links]).map((link) => ({
+      id: link.id,
+      title: link.object?.title ?? '',
+      url: link.object?.url ?? '',
+      relationship: link.relationship,
+      applicationType: link.application?.type,
+      applicationName: link.application?.name,
+    }));
   }
 
   async getTicketComments(ticketId: string): Promise<JiraComment[]> {

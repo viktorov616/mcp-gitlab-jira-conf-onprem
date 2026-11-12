@@ -68,6 +68,15 @@ export interface JiraCustomFieldUpdatePayload {
   [key: string]: string | number | boolean | string[] | null | undefined;
 }
 
+export interface JiraRemoteLink {
+  id?: number;
+  title: string;
+  url: string;
+  relationship?: string;
+  applicationType?: string;
+  applicationName?: string;
+}
+
 export interface JiraTicketTransitionPayload {
   transitionId: string;
 }

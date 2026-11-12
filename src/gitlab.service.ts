@@ -6,8 +6,9 @@ import {
   GitLabMergeRequest,
   GitLabPosition,
   GitLabUser,
-  ParsedHunk,
+  MergeRequestFileDiff,
 } from './gitlab.js';
+import { annotateDiffWithLineNumbers } from './gitlab.diff.js';
 
 export class GitLabService {
   private readonly config: GitLabConfig;
@@ -48,72 +49,6 @@ export class GitLabService {
       console.error(`Failed to call GitLab API: ${error}`);
       throw error;
     }
-  }
-
-  private parseDiff(diff: string): ParsedHunk[] {
-    const hunks: ParsedHunk[] = [];
-    const lines = diff.split('\n');
-    let currentHunk: ParsedHunk | null = null;
-
-    for (const line of lines) {
-      if (line.startsWith('@@')) {
-        // Hunk header
-        const headerMatch = line.match(
-          /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)/,
-        );
-        if (headerMatch) {
-          if (currentHunk) {
-            hunks.push(currentHunk);
-          }
-          currentHunk = {
-            header: line,
-            oldStartLine: parseInt(headerMatch[1], 10),
-            oldLineCount: parseInt(headerMatch[2] || '1', 10),
-            newStartLine: parseInt(headerMatch[3], 10),
-            newLineCount: parseInt(headerMatch[4] || '1', 10),
-            lines: [],
-            isCollapsed: false,
-          };
-        }
-      } else if (currentHunk) {
-        // Hunk content
-        let lineType: 'add' | 'remove' | 'context';
-        let oldLine: number | undefined;
-        let newLine: number | undefined;
-
-        if (line.startsWith('+')) {
-          lineType = 'add';
-          newLine =
-            currentHunk.newStartLine +
-            currentHunk.lines.filter((l) => l.type !== 'remove').length;
-        } else if (line.startsWith('-')) {
-          lineType = 'remove';
-          oldLine =
-            currentHunk.oldStartLine +
-            currentHunk.lines.filter((l) => l.type !== 'add').length;
-        } else {
-          lineType = 'context';
-          oldLine =
-            currentHunk.oldStartLine +
-            currentHunk.lines.filter((l) => l.type !== 'add').length;
-          newLine =
-            currentHunk.newStartLine +
-            currentHunk.lines.filter((l) => l.type !== 'remove').length;
-        }
-
-        currentHunk.lines.push({
-          type: lineType,
-          oldLine,
-          newLine,
-          content: line,
-        });
-      }
-    }
-
-    if (currentHunk) {
-      hunks.push(currentHunk);
-    }
-    return hunks;
   }
 
   // Utility method to parse GitLab MR URLs
@@ -163,24 +98,20 @@ export class GitLabService {
       `projects/${encodedProjectPath}/merge_requests/${mrIid}/changes`,
     );
 
-    // Map file diffs
-    const fileDiffs = mrChanges.changes.map((change: any) => ({
-      old_path: change.old_path,
-      new_path: change.new_path,
-      new_file: change.new_file,
-      deleted_file: change.deleted_file,
-      renamed_file: change.renamed_file,
-      diff: change.diff,
-    }));
-
-    const parsedDiffs = fileDiffs.map((diff: any) => ({
-      filePath: diff.new_path,
-      oldPath: diff.old_path,
-      isNew: diff.new_file,
-      isDeleted: diff.deleted_file,
-      isRenamed: diff.renamed_file,
-      hunks: this.parseDiff(diff.diff),
-    }));
+    const files: MergeRequestFileDiff[] = mrChanges.changes.map(
+      (change: any) => ({
+        oldPath: change.old_path,
+        newPath: change.new_path,
+        status: change.new_file
+          ? 'added'
+          : change.deleted_file
+            ? 'deleted'
+            : change.renamed_file
+              ? 'renamed'
+              : 'modified',
+        diff: annotateDiffWithLineNumbers(change.diff ?? ''),
+      }),
+    );
 
     return {
       projectPath: mrDetails.path_with_namespace,
@@ -194,12 +125,7 @@ export class GitLabService {
       base_sha: mrDetails.diff_refs.base_sha,
       start_sha: mrDetails.diff_refs.start_sha,
       head_sha: mrDetails.diff_refs.head_sha,
-      fileDiffs: fileDiffs,
-      diffForPrompt: fileDiffs.map((diff: any) => diff.diff).join('\n'),
-      parsedDiffs: parsedDiffs,
-      fileContents: new Map(), // fileContents will be populated by a separate tool
-      discussions: [], // Discussions will be fetched by a separate tool
-      existingFeedback: [], // Existing feedback will be derived from discussions
+      files,
     };
   }
 

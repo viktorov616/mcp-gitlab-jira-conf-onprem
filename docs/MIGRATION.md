@@ -6,14 +6,14 @@
 ## 1. Поставить новый пакет
 
 ```bash
-cd /path/to/mcp-gitlab-jira-onprem
+cd /path/to/mcp-gitlab-jira-conf-onprem
 ./install.sh
 ```
 
 ## 2. Обновить `~/.cursor/mcp.json`
 
-`command` должен быть `mcp-gitlab-jira-onprem` или абсолютный путь из вывода `install.sh`.
-Не используйте `mcp-gitlab-jira` (upstream).
+`command` должен быть `mcp-gitlab-jira-conf-onprem` или абсолютный путь из вывода `install.sh`.
+Не используйте `mcp-gitlab-jira` (upstream) и `mcp-gitlab-jira-onprem` (предыдущий форк без Confluence).
 
 ## 3. Убрать старое (опционально)
 
@@ -25,6 +25,7 @@ pkill -f 'mcp-gitlab-jira-bearer' || true
 # локальный хак-копии
 rm -rf ~/.local/share/mcp-gitlab-jira-bearer
 rm -f ~/.local/bin/mcp-gitlab-jira-bearer
+rm -f ~/.local/bin/mcp-gitlab-jira-onprem   # предыдущий форк
 rm -f ~/.local/share/jira.service.js.patched
 
 # глобальный npm (если больше не нужен upstream)

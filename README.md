@@ -1,157 +1,136 @@
-# mcp-gitlab-jira-onprem
+# mcp-gitlab-jira-conf-onprem
 
-MCP-сервер для **GitLab** и **Jira Server / Data Center**.
+MCP-сервер для GitLab, Jira Server/DC и Confluence Server/DC.
 
-Форк [`mcp-gitlab-jira`](https://www.npmjs.com/package/mcp-gitlab-jira) с правками под on-prem:
+## 1. Установка
 
-| Проблема upstream | Решение в этом пакете |
-|---|---|
-| Basic Auth `email + apiToken` (Cloud) → **401** на Server/DC | **Bearer** Personal Access Token |
-| `Version3Client` (Cloud API v3) ломается on-prem | **`Version2Client`** (REST API v2) |
-| Agile-запросы тоже шли через Basic | Bearer |
-
-Подходит для внутренних инстансов вроде `https://jira.example.com` + self-hosted GitLab.
-
-## Требования
-
-- Node.js 18+
-- GitLab Personal Access Token (API)
-- Jira Server/DC **Personal Access Token**  
-  Profile → Personal Access Tokens → Create  
-  Проверка:
+Нужен Node.js 18+.
 
 ```bash
-curl -sS -o /dev/null -w "%{http_code}\n" \
-  -H "Authorization: Bearer $ATLASSIAN_API_TOKEN" \
-  -H "Accept: application/json" \
-  "$ATLASSIAN_SITE_NAME/rest/api/2/myself"
-# ожидаем 200
+git clone https://github.com/viktorov616/mcp-gitlab-jira-conf-onprem.git ~/tools/mcp-gitlab-jira-conf-onprem
+cd ~/tools/mcp-gitlab-jira-conf-onprem
+./install.sh
 ```
 
-> Cloud API token (`ATATT…`) и Basic `email:token` для on-prem **не подойдут**.
-
-## Установка
-
-### Вариант A — из git
+Скрипт выполнит `npm install`, `npm run build` и создаст команду `~/.local/bin/mcp-gitlab-jira-conf-onprem`. Проверьте, что `~/.local/bin` есть в `PATH`:
 
 ```bash
-npm i -g git+ssh://git@YOUR_GITHOST/YOUR_GROUP/mcp-gitlab-jira-onprem.git
-# или
-npm i -g /path/to/mcp-gitlab-jira-onprem
+which mcp-gitlab-jira-conf-onprem
 ```
 
-Проверка:
+Если пусто — добавьте в `~/.bashrc` (или `~/.zshrc`) строку `export PATH="$HOME/.local/bin:$PATH"`.
 
-```bash
-which mcp-gitlab-jira-onprem
-mcp-gitlab-jira-onprem   # должен стартовать и ждать stdio; Ctrl+C
-```
+## 2. Токены
 
-### Вариант B — локально без глобальной установки
+Каждый сервис настраивается отдельно — достаточно тех, что нужны.
 
-```bash
-git clone <repo-url> ~/tools/mcp-gitlab-jira-onprem
-cd ~/tools/mcp-gitlab-jira-onprem
-npm install
-npm run build
-```
-
-В `mcp.json` укажите абсолютный путь к `dist/index.js` (см. ниже).
-
-## Переменные окружения
-
-| Переменная | Обязательна | Пример |
+| Сервис | Где создать | Проверка (ожидаем `200`) |
 |---|---|---|
-| `GITLAB_URL` | да* | `https://gitlab.example.com` |
-| `GITLAB_ACCESS_TOKEN` | да* | `glpat-…` |
-| `ATLASSIAN_SITE_NAME` | да* | `https://jira.example.com` (**полный URL**, не sitename Cloud) |
-| `ATLASSIAN_API_TOKEN` | да* | PAT из Jira Server/DC |
-| `ATLASSIAN_USER_EMAIL` | нет | `user@example.com` (для совместимости) |
+| GitLab | Preferences → Access Tokens, scope `api` | `curl -s -o /dev/null -w "%{http_code}\n" -H "Private-Token: $GITLAB_ACCESS_TOKEN" "$GITLAB_URL/api/v4/user"` |
+| Jira | Профиль → Personal Access Tokens | `curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $ATLASSIAN_API_TOKEN" "$ATLASSIAN_SITE_NAME/rest/api/2/myself"` |
+| Confluence | Профиль → Settings → Personal Access Tokens | `curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $CONFLUENCE_API_TOKEN" "$CONFLUENCE_URL/rest/api/user/current"` |
 
-\*нужны для соответствующей половины инструментов; можно поднять только GitLab или только Jira.
+Токены Jira и Confluence — разные. Cloud-токены (`ATATT…`) не подойдут.
 
-Положите их в `~/.zshrc` / `~/.bashrc` **и** перезапустите Cursor из окружения, где они видны:
+## 3. Переменные окружения
 
-```bash
-export GITLAB_URL="https://gitlab.example.com"
-export GITLAB_ACCESS_TOKEN="glpat-…"
-export ATLASSIAN_SITE_NAME="https://jira.example.com"
-export ATLASSIAN_API_TOKEN="ваш-pat"
+| Переменная | Пример |
+|---|---|
+| `GITLAB_URL` | `https://gitlab.example.com` |
+| `GITLAB_ACCESS_TOKEN` | `glpat-…` |
+| `ATLASSIAN_SITE_NAME` | `https://jira.example.com` — полный URL |
+| `ATLASSIAN_API_TOKEN` | PAT из Jira |
+| `CONFLUENCE_URL` | `https://wiki.example.com` или `https://example.com/confluence` — вместе с context path |
+| `CONFLUENCE_API_TOKEN` | PAT из Confluence |
+| `CONFLUENCE_USERNAME` | Только для Confluence < 7.9 (нет PAT): логин, а в `CONFLUENCE_API_TOKEN` — пароль |
+| `MCP_READ_ONLY` | `true` — отключить инструменты, которые что-то меняют (комментарии, переходы, ветки, пайплайны) |
+
+Не задали переменные сервиса — его инструменты не появятся. Чем меньше инструментов, тем меньше контекста модели они занимают.
+
+## 4. Подключение
+
+Во всех клиентах сервер запускается командой `mcp-gitlab-jira-conf-onprem`. Если клиент её не находит (GUI-приложения часто не видят `~/.local/bin`), укажите абсолютный путь — `/home/YOU/.local/bin/mcp-gitlab-jira-conf-onprem`.
+
+### opencode — `~/.config/opencode/opencode.json`
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "gitlab-jira-conf": {
+      "type": "local",
+      "command": ["mcp-gitlab-jira-conf-onprem"],
+      "enabled": true,
+      "environment": {
+        "GITLAB_URL": "https://gitlab.example.com",
+        "GITLAB_ACCESS_TOKEN": "REPLACE_ME",
+        "ATLASSIAN_SITE_NAME": "https://jira.example.com",
+        "ATLASSIAN_API_TOKEN": "REPLACE_ME",
+        "CONFLUENCE_URL": "https://wiki.example.com",
+        "CONFLUENCE_API_TOKEN": "REPLACE_ME"
+      }
+    }
+  }
+}
 ```
 
-Либо пропишите `env` прямо в `mcp.json` (удобно шарить шаблон, секреты — каждый себе).
+### Claude Code
 
-## Cursor: `~/.cursor/mcp.json`
+```bash
+claude mcp add gitlab-jira-conf \
+  -e GITLAB_URL=https://gitlab.example.com \
+  -e GITLAB_ACCESS_TOKEN=REPLACE_ME \
+  -e ATLASSIAN_SITE_NAME=https://jira.example.com \
+  -e ATLASSIAN_API_TOKEN=REPLACE_ME \
+  -e CONFLUENCE_URL=https://wiki.example.com \
+  -e CONFLUENCE_API_TOKEN=REPLACE_ME \
+  -- mcp-gitlab-jira-conf-onprem
+```
+
+### Cursor — `~/.cursor/mcp.json`
 
 ```json
 {
   "mcpServers": {
-    "gitlab-jira-mcp": {
-      "command": "mcp-gitlab-jira-onprem",
+    "gitlab-jira-conf": {
+      "command": "mcp-gitlab-jira-conf-onprem",
       "args": [],
       "env": {
         "GITLAB_URL": "https://gitlab.example.com",
         "GITLAB_ACCESS_TOKEN": "REPLACE_ME",
         "ATLASSIAN_SITE_NAME": "https://jira.example.com",
-        "ATLASSIAN_API_TOKEN": "REPLACE_ME"
+        "ATLASSIAN_API_TOKEN": "REPLACE_ME",
+        "CONFLUENCE_URL": "https://wiki.example.com",
+        "CONFLUENCE_API_TOKEN": "REPLACE_ME"
       }
     }
   }
 }
 ```
 
-Без глобальной установки:
+После изменения конфига полностью перезапустите Cursor — Reload Window часто оставляет старый процесс.
 
-```json
-{
-  "mcpServers": {
-    "gitlab-jira-mcp": {
-      "command": "node",
-      "args": ["/home/YOU/tools/mcp-gitlab-jira-onprem/dist/index.js"],
-      "env": {
-        "GITLAB_URL": "https://gitlab.example.com",
-        "GITLAB_ACCESS_TOKEN": "REPLACE_ME",
-        "ATLASSIAN_SITE_NAME": "https://jira.example.com",
-        "ATLASSIAN_API_TOKEN": "REPLACE_ME"
-      }
-    }
-  }
-}
-```
+### Переход с `mcp-gitlab-jira-onprem`
 
-После правок: **полностью перезапустите Cursor** (Reload Window часто оставляет старый MCP-процесс).
+Если раньше подключали старый форк командой `mcp-gitlab-jira-onprem`, замените её в конфиге на `mcp-gitlab-jira-conf-onprem` и добавьте переменные `CONFLUENCE_*`. Старую команду можно удалить: `rm ~/.local/bin/mcp-gitlab-jira-onprem`.
 
-## Сеть / VPN
+## 5. Использование
 
-Если Jira доступна только в корпоративной сети / без VPN-туннеля:
+Попросите агента, например: «Возьми задачу PROJ-123 вместе с описанием из Confluence». Инструмент `jira_get_ticket_with_confluence_pages` вернёт тикет и текст всех связанных страниц — из блока «Confluence pages» и из ссылок в описании.
 
-1. Убедитесь, что `curl …/myself` = 200 **из того же окружения**, что и Cursor.
-2. При split-tunnel (Nekoray и т.п.) добавьте `jira.example.com` в **direct/bypass**, иначе TLS/auth могут вести себя иначе, чем в браузере.
-
-## Отличия от upstream
-
-См. [CHANGELOG.md](./CHANGELOG.md). Кратко:
-
-1. Jira auth: Bearer PAT  
-2. Jira client: `Version2Client`  
-3. Agile REST: Bearer  
-4. Search: классический `/rest/api/2/search`  
-5. Комментарии: plain string body (не ADF)
-
-GitLab-часть без изменений по смыслу.
-
-Миграция со старых ручных патчей: [docs/MIGRATION.md](./docs/MIGRATION.md).
-
-## Разработка
+## Обновление
 
 ```bash
-npm install
-npm run build
-npm start   # stdio MCP
+cd ~/tools/mcp-gitlab-jira-conf-onprem
+git pull
+./install.sh
 ```
 
-Исходники — `src/`, артефакт — `dist/`.
+Затем перезапустите MCP-клиент.
 
-## Лицензия
+## Если не работает
 
-MIT (как у upstream). Upstream: [hainanzhao/mcp-gitlab-jira](https://github.com/hainanzhao/mcp-gitlab-jira) / npm `mcp-gitlab-jira@0.1.9`.
+- `curl` из раздела 2 должен возвращать `200` в том же окружении, где запущен клиент.
+- Сервисы доступны только из корпоративной сети — при split-tunnel VPN добавьте их домены в direct/bypass.
+- `command not found` / сервер не стартует — проверьте `which mcp-gitlab-jira-conf-onprem` или укажите в конфиге абсолютный путь.
+- Логи сервера пишутся в stderr: при старте видно, какие сервисы инициализированы.

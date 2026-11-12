@@ -122,7 +122,6 @@ describe('JiraService transformations', () => {
 
       expect(mockClient.issues.getIssue).toHaveBeenCalledWith({
         issueIdOrKey: 'PROJ-123',
-        expand: ['names', 'schema', 'operations', 'editmeta', 'changelog', 'renderedFields'],
       });
     });
 

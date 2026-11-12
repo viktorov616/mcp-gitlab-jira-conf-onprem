@@ -17,6 +17,8 @@ import {
   JiraTicketUpdatePayload,
   JiraCustomFieldUpdatePayload,
 } from './jira.js';
+import { ConfluenceService } from './confluence.service.js';
+import { getTicketWithConfluencePages } from './ticket-docs.js';
 
 // Load GitLab configuration from environment variables
 const gitlabUrl = process.env.GITLAB_URL;
@@ -68,12 +70,40 @@ try {
   console.error('Error initializing Jira service:', error);
 }
 
+// Load Confluence configuration from environment variables.
+// CONFLUENCE_URL is the full base URL including context path, e.g. https://wiki.example.com or https://example.com/confluence
+// CONFLUENCE_API_TOKEN is a Confluence Server/DC Personal Access Token (Bearer).
+// CONFLUENCE_USERNAME switches to Basic auth (username + password/token) for Confluence < 7.9.
+const confluenceUrl = process.env.CONFLUENCE_URL;
+const confluenceApiToken = process.env.CONFLUENCE_API_TOKEN;
+const confluenceUsername = process.env.CONFLUENCE_USERNAME || undefined;
+
+let confluenceService: ConfluenceService | undefined;
+try {
+  if (confluenceUrl && confluenceApiToken) {
+    confluenceService = new ConfluenceService({
+      baseUrl: confluenceUrl,
+      apiToken: confluenceApiToken,
+      username: confluenceUsername,
+    });
+    console.error(
+      `Confluence service initialized (Server/DC: ${confluenceUsername ? 'Basic' : 'Bearer PAT'} + REST API)`,
+    );
+  } else {
+    console.error(
+      'Warning: CONFLUENCE_URL and CONFLUENCE_API_TOKEN are not set. Confluence tools will be unavailable.',
+    );
+  }
+} catch (error) {
+  console.error('Error initializing Confluence service:', error);
+}
+
 // Define all possible tools
 const allTools: Tool[] = [
   {
     name: 'gitlab_get_merge_request_details',
     description:
-      'Fetches detailed information about a GitLab Merge Request, including file diffs.',
+      'Fetches a GitLab Merge Request with per-file diffs. Each diff line is prefixed with its old and new line numbers (blank when absent on that side); use them as old_line/new_line, and base_sha/start_sha/head_sha, for inline comments.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1183,18 +1213,150 @@ const allTools: Tool[] = [
       required: ['sprintId'],
     },
   },
+  {
+    name: 'jira_get_ticket_remote_links',
+    description:
+      'Lists remote links of a Jira ticket (the "Confluence pages" / "Web links" panel), including linked Confluence pages.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ticketId: {
+          type: 'string',
+          description: 'The ID of the Jira ticket (e.g., "JIRA-123").',
+        },
+      },
+      required: ['ticketId'],
+    },
+  },
+  {
+    name: 'jira_get_ticket_with_confluence_pages',
+    description:
+      'Fetches a Jira ticket together with the content (as Markdown) of every Confluence page linked to it, via remote links or URLs in the description. Prefer this when a ticket\'s requirements are described in Confluence.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ticketId: {
+          type: 'string',
+          description: 'The ID of the Jira ticket (e.g., "JIRA-123").',
+        },
+        maxPageLength: {
+          type: 'number',
+          description:
+            'Maximum characters of Markdown per page; longer pages are truncated (default: 50000).',
+        },
+      },
+      required: ['ticketId'],
+    },
+  },
+  {
+    name: 'confluence_get_page',
+    description:
+      'Fetches a Confluence page and returns its metadata and content converted to Markdown.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        page: {
+          type: 'string',
+          description:
+            'Page ID or page URL (viewpage.action?pageId=…, /display/SPACE/Title, /spaces/SPACE/pages/123/…, /x/tinyLink).',
+        },
+        maxLength: {
+          type: 'number',
+          description:
+            'Maximum characters of Markdown to return; longer pages are truncated (default: 50000).',
+        },
+      },
+      required: ['page'],
+    },
+  },
+  {
+    name: 'confluence_search',
+    description:
+      'Searches Confluence content using CQL, e.g. `type = page AND space = "DEV" AND text ~ "авторизация"`.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cql: {
+          type: 'string',
+          description: 'Confluence Query Language expression.',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of results to return (default: 25).',
+        },
+      },
+      required: ['cql'],
+    },
+  },
+  {
+    name: 'confluence_get_child_pages',
+    description: 'Lists direct child pages of a Confluence page.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        page: {
+          type: 'string',
+          description: 'Parent page ID or page URL.',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of results to return (default: 100).',
+        },
+      },
+      required: ['page'],
+    },
+  },
 ];
 
-// Filter tools based on service availability
+const WRITE_TOOLS = new Set([
+  'gitlab_add_comment_to_merge_request',
+  'gitlab_assign_reviewers_to_merge_request',
+  'gitlab_trigger_pipeline',
+  'gitlab_retry_pipeline',
+  'gitlab_cancel_pipeline',
+  'gitlab_create_branch',
+  'gitlab_delete_branch',
+  'gitlab_create_issue',
+  'gitlab_update_issue',
+  'gitlab_close_issue',
+  'gitlab_add_comment_to_issue',
+  'jira_add_comment_to_ticket',
+  'jira_create_ticket',
+  'jira_update_ticket',
+  'jira_update_custom_fields',
+  'jira_update_ticket_story_point',
+  'jira_update_ticket_priority',
+  'jira_update_ticket_sprint',
+  'jira_transition_ticket',
+]);
+
+const readOnly = ['true', '1'].includes(
+  (process.env.MCP_READ_ONLY ?? '').toLowerCase(),
+);
+if (readOnly) {
+  console.error('Read-only mode: tools that modify data are disabled');
+}
+
+// Filter tools based on service availability and read-only mode
 const availableTools = allTools.filter((tool) => {
+  if (readOnly && WRITE_TOOLS.has(tool.name)) {
+    return false;
+  }
+  if (tool.name === 'jira_get_ticket_with_confluence_pages') {
+    return !!jiraService && !!confluenceService;
+  }
   if (tool.name.startsWith('gitlab_')) {
     return !!gitlabService;
   }
   if (tool.name.startsWith('jira_')) {
     return !!jiraService;
   }
+  if (tool.name.startsWith('confluence_')) {
+    return !!confluenceService;
+  }
   return true;
 });
+const availableToolNames = new Set(availableTools.map((tool) => tool.name));
 
 // Initialize the MCP server
 const server = new Server(
@@ -1214,6 +1376,13 @@ server.setRequestHandler(
     const { name, arguments: args } = request.params;
 
     try {
+      if (!availableToolNames.has(name)) {
+        throw new Error(
+          readOnly && WRITE_TOOLS.has(name)
+            ? 'Tool is disabled in read-only mode (MCP_READ_ONLY).'
+            : `Unknown or unavailable tool: ${name}`,
+        );
+      }
       switch (name) {
         case 'gitlab_get_merge_request_details': {
           if (!gitlabService) {
@@ -1226,7 +1395,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -1292,7 +1461,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -1333,7 +1502,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -1350,7 +1519,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -1366,7 +1535,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -1381,7 +1550,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -1397,7 +1566,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -1425,7 +1594,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -1441,7 +1610,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify({ userId }, null, 2),
+                text: JSON.stringify({ userId }),
               },
             ],
           };
@@ -1474,7 +1643,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(activities, null, 2),
+                text: JSON.stringify(activities),
               },
             ],
           };
@@ -1490,7 +1659,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -1506,7 +1675,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -1541,7 +1710,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -1559,7 +1728,7 @@ server.setRequestHandler(
                 content: [
                     {
                         type: 'text',
-                        text: JSON.stringify({ ...created, url: browseUrl }, null, 2),
+                        text: JSON.stringify({ ...created, url: browseUrl }),
                     },
                 ],
             };
@@ -1575,7 +1744,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -1721,7 +1890,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -1756,7 +1925,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -1773,7 +1942,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -1789,7 +1958,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -1805,7 +1974,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -1821,7 +1990,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -1853,7 +2022,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: `Pipeline triggered successfully: ${JSON.stringify(result, null, 2)}`,
+                text: `Pipeline triggered successfully: ${JSON.stringify(result)}`,
               },
             ],
           };
@@ -1869,7 +2038,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: `Pipeline retry triggered successfully: ${JSON.stringify(result, null, 2)}`,
+                text: `Pipeline retry triggered successfully: ${JSON.stringify(result)}`,
               },
             ],
           };
@@ -1885,7 +2054,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: `Pipeline cancelled successfully: ${JSON.stringify(result, null, 2)}`,
+                text: `Pipeline cancelled successfully: ${JSON.stringify(result)}`,
               },
             ],
           };
@@ -1902,7 +2071,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -1918,7 +2087,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: `Branch created successfully: ${JSON.stringify(result, null, 2)}`,
+                text: `Branch created successfully: ${JSON.stringify(result)}`,
               },
             ],
           };
@@ -1950,7 +2119,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -1967,7 +2136,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -1983,7 +2152,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -2005,7 +2174,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: `Issue created successfully: ${JSON.stringify(result, null, 2)}`,
+                text: `Issue created successfully: ${JSON.stringify(result)}`,
               },
             ],
           };
@@ -2031,7 +2200,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: `Issue updated successfully: ${JSON.stringify(result, null, 2)}`,
+                text: `Issue updated successfully: ${JSON.stringify(result)}`,
               },
             ],
           };
@@ -2047,7 +2216,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: `Issue closed successfully: ${JSON.stringify(result, null, 2)}`,
+                text: `Issue closed successfully: ${JSON.stringify(result)}`,
               },
             ],
           };
@@ -2063,7 +2232,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: `Comment added successfully: ${JSON.stringify(result, null, 2)}`,
+                text: `Comment added successfully: ${JSON.stringify(result)}`,
               },
             ],
           };
@@ -2079,7 +2248,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -2095,7 +2264,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -2111,7 +2280,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -2127,7 +2296,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -2143,7 +2312,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -2167,7 +2336,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -2183,7 +2352,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -2211,7 +2380,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -2244,7 +2413,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -2260,7 +2429,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -2282,7 +2451,7 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -2305,7 +2474,98 @@ server.setRequestHandler(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(result),
+              },
+            ],
+          };
+        }
+
+        case 'jira_get_ticket_remote_links': {
+          if (!jiraService) {
+            throw new Error('Jira service is not initialized.');
+          }
+          const { ticketId } = args as { ticketId: string };
+          const result = await jiraService.getRemoteLinks(ticketId);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(result),
+              },
+            ],
+          };
+        }
+
+        case 'jira_get_ticket_with_confluence_pages': {
+          if (!jiraService || !confluenceService) {
+            throw new Error('Jira and Confluence services must be initialized.');
+          }
+          const { ticketId, maxPageLength } = args as {
+            ticketId: string;
+            maxPageLength?: number;
+          };
+          const result = await getTicketWithConfluencePages(
+            jiraService,
+            confluenceService,
+            ticketId,
+            maxPageLength,
+          );
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(result),
+              },
+            ],
+          };
+        }
+
+        case 'confluence_get_page': {
+          if (!confluenceService) {
+            throw new Error('Confluence service is not initialized.');
+          }
+          const { page, maxLength } = args as {
+            page: string;
+            maxLength?: number;
+          };
+          const result = await confluenceService.getPage(page, maxLength);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(result),
+              },
+            ],
+          };
+        }
+
+        case 'confluence_search': {
+          if (!confluenceService) {
+            throw new Error('Confluence service is not initialized.');
+          }
+          const { cql, limit } = args as { cql: string; limit?: number };
+          const result = await confluenceService.search(cql, limit);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(result),
+              },
+            ],
+          };
+        }
+
+        case 'confluence_get_child_pages': {
+          if (!confluenceService) {
+            throw new Error('Confluence service is not initialized.');
+          }
+          const { page, limit } = args as { page: string; limit?: number };
+          const result = await confluenceService.getChildPages(page, limit);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(result),
               },
             ],
           };
@@ -2326,7 +2586,7 @@ server.setRequestHandler(
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('GitLab/Jira MCP server started');
+  console.error('GitLab/Jira/Confluence MCP server started');
   while (true) {
     await new Promise(resolve => setTimeout(resolve, 1000));
   }

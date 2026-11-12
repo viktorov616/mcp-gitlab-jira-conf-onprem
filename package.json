@@ -1,11 +1,11 @@
 {
-  "name": "mcp-gitlab-jira-onprem",
-  "version": "0.2.0",
+  "name": "mcp-gitlab-jira-conf-onprem",
+  "version": "0.3.0",
   "type": "module",
-  "description": "MCP server for GitLab + Jira Server/Data Center (Bearer PAT, REST API v2). Fork of mcp-gitlab-jira.",
+  "description": "MCP server for GitLab + Jira and Confluence Server/Data Center (Bearer PAT). Fork of mcp-gitlab-jira.",
   "main": "dist/index.js",
   "bin": {
-    "mcp-gitlab-jira-onprem": "dist/index.js"
+    "mcp-gitlab-jira-conf-onprem": "dist/index.js"
   },
   "files": [
     "dist",
@@ -26,6 +26,8 @@
     "jira",
     "jira-server",
     "jira-data-center",
+    "confluence",
+    "confluence-server",
     "model-context-protocol"
   ],
   "author": "",
@@ -34,16 +36,19 @@
     "node": ">=18"
   },
   "dependencies": {
+    "@joplin/turndown-plugin-gfm": "1.0.68",
     "@modelcontextprotocol/sdk": "^0.5.0",
     "jira.js": "^5.2.2",
     "node-fetch": "^3.3.0",
-    "semver": "^7.7.2"
+    "semver": "^7.7.2",
+    "turndown": "7.2.4"
   },
   "devDependencies": {
     "@eslint/js": "^9.32.0",
     "@types/jest": "^30.0.0",
     "@types/node": "^20.0.0",
     "@types/semver": "^7.7.0",
+    "@types/turndown": "5.0.6",
     "@typescript-eslint/eslint-plugin": "^8.38.0",
     "@typescript-eslint/parser": "^8.38.0",
     "eslint": "^9.32.0",

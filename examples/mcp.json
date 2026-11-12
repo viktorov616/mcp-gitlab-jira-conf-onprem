@@ -1,13 +1,15 @@
 {
   "mcpServers": {
-    "gitlab-jira-mcp": {
-      "command": "mcp-gitlab-jira-onprem",
+    "gitlab-jira-conf": {
+      "command": "mcp-gitlab-jira-conf-onprem",
       "args": [],
       "env": {
         "GITLAB_URL": "https://gitlab.example.com",
         "GITLAB_ACCESS_TOKEN": "glpat-REPLACE_ME",
         "ATLASSIAN_SITE_NAME": "https://jira.example.com",
-        "ATLASSIAN_API_TOKEN": "REPLACE_ME_JIRA_SERVER_PAT"
+        "ATLASSIAN_API_TOKEN": "REPLACE_ME_JIRA_SERVER_PAT",
+        "CONFLUENCE_URL": "https://wiki.example.com",
+        "CONFLUENCE_API_TOKEN": "REPLACE_ME_CONFLUENCE_SERVER_PAT"
       }
     }
   }
